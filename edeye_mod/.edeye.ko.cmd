@@ -1,0 +1,1 @@
+cmd_/home/mcasti/Progetti/C_Lab/edeye_drv/edeye.ko := aarch64-linux-gnu-ld -r  -EL  -maarch64elf  --build-id  -T ./scripts/module-common.lds -T ./arch/arm64/kernel/module.lds -o /home/mcasti/Progetti/C_Lab/edeye_drv/edeye.ko /home/mcasti/Progetti/C_Lab/edeye_drv/edeye.o /home/mcasti/Progetti/C_Lab/edeye_drv/edeye.mod.o;  true

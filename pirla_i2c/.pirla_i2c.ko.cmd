@@ -1,0 +1,1 @@
+cmd_/home/mcasti/Progetti/C_Lab/pirla_i2c/pirla_i2c.ko := aarch64-linux-gnu-ld -r  -EL  -maarch64elf  --build-id  -T ./scripts/module-common.lds -T ./arch/arm64/kernel/module.lds -o /home/mcasti/Progetti/C_Lab/pirla_i2c/pirla_i2c.ko /home/mcasti/Progetti/C_Lab/pirla_i2c/pirla_i2c.o /home/mcasti/Progetti/C_Lab/pirla_i2c/pirla_i2c.mod.o;  true

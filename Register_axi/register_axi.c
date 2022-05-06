@@ -184,7 +184,8 @@ static int regs_remove(struct platform_device *pdev)
 
 	/* FIXME: resource release ! */
 	debugfs_remove_recursive(priv->debugfsdir);								// Distrugge la directoy del regset ed anche il file ivi contenuuto
-	kfree(priv);																							// disintegra la lavagnetta
+	cdev_del(&priv->regs_cdev);																	  // Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
+	kfree(priv);																							// disintegra la lavagnetta (simmetrico a kmalloc fatto nella probe)
 	return 0;
 }
 

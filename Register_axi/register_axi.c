@@ -58,6 +58,7 @@
 
 #define REGS_IOCTL_READTIMESTAMP			1
 
+#define REG_LOG 1
 
 static struct debugfs_reg32 regs_regs[] = {
 	{"ID_REG",									0x00},
@@ -98,23 +99,70 @@ static int regs_id = 0; 					// Variabile globale che serve per assegnare il Min
 // 	printk(KERN_INFO "W32 0x%x = 0x%x\n", offs, val);
 // }
 
+
+static u32 register_read(struct regs_priv *priv, int offs)
+{
+	u32 val;
+	val = readl(priv->reg_base + offs);			// Legge il valore del registro all' offset indicato
+#if REG_LOG
+	printk(KERN_INFO "R32 0x%x == 0x%x\n", offs, val);
+#endif
+	return val;
+}
+
 static ssize_t regs_chardev_read(struct file *f, char __user *user_buffer, size_t length,	loff_t *offset)
 {
 	
-	static const char    string_2br[]    = "Hello world from the beautyful kernel mode!\n";
-  static const ssize_t string_2br_size = sizeof(string_2br); 
-	
+	const char    string_2br[]    = "WHO I AM:\n";
+	const ssize_t string_2br_size = sizeof(string_2br);    // Lunghezza della stringa comprendente lo 0x00 terminale aggiunto dal C
+  const ssize_t string_2br_lenght = strlen(string_2br);  // Lunghezza della stringa SENZA lo 0x00 
+	u32 reg_val; 
+	int rolling_length = 0;
+	int rolling_index = 0;
 	struct regs_priv *priv = f->private_data;  						// Recupera la lavagnetta
+	char *entire_string;
+	int i;
 	
-	dev_info(&priv->pdev->dev, "chardev_read executed with length: %lld", (string_2br_size - *offset));	// Stampa il messaggio in dmesg
+	dev_info(&priv->pdev->dev, "chardev_read executed with length: %lld", (string_2br_lenght - *offset));	// Stampa il messaggio in dmesg
 	
-	if (length > (string_2br_size - *offset))							   // Determina la lunghezza del buffer da passare come minimo tra il dato in ingresso e la lunghezza della stringa diminuita sdei caratteri gia' letti (offset)
-		length = string_2br_size - *offset;
-	// length = min(lenght, string_2br_size - *offset);			 // alternativa alla modalita' precedente
+	register_read(priv,FPGA_RELEASE_REG);   // Lettura dummy per azzerare il contatore del roling register
+  
+	// Misura della lunghezza del rolling register
+	while ((register_read(priv,ID_REG) & 0x000000FF) != 0x00000003)   // Finche' il byte 0 del registro non 'e 0x03, esegue il loop
+		rolling_length++;																								// incremente al variabile che conta la lunghezza della stringa rolling
+																																		// Nota: inizia con 0x02 (stx) e finisce con 0x03 (etx), il conteggio contempla la 0x02 ma non la 0x03
 	
-	// copy_to_user(user_buffer, string_2br, length);				  // string_2br e' l' indirizzo del primo carattere contenuto nella stringa
-  copy_to_user(user_buffer, string_2br+*offset, length);		// string_2br e' l' indirizzo del primo carattere contenuto nella stringa, a cui si somma offset
-	//copy_to_user(user_buffer, &string_2br[*offset], length);	// &string_2br[*offset] e' l' indirizzo del carattere nella posizione [offset] (metodo alternativo alla riga precedente)
+	entire_string = kmalloc(rolling_length+string_2br_lenght, GFP_KERNEL);						  // Alloca la entire string (nota: la lunghezza della rolling considera una posizione in piu' 
+																																										//dovuta al 0x02 iniziale, che ci e' utile per metterci il /n)
+	if (entire_string == NULL) {																			// Verifica la buona riuscita
+		dev_err(&priv->pdev->dev, "Rolling String memory allocation failed");
+		return -ENOMEM;
+		}
+
+	memset (entire_string, 'F',rolling_length+string_2br_lenght);
+	
+	register_read(priv,FPGA_RELEASE_REG);   // Lettura dummy per azzerare di nuovo il contatore del roling register
+  
+	strcpy(entire_string, string_2br);
+	
+	register_read(priv,ID_REG); // Per eliminare il 0x02 iniziale;
+	
+	// Misura della lunghezza del rolling register
+	for (i = 0; i <= rolling_length-2; i++)   // Finche' il byte 0 del registro non 'e 0x03, esegue il loop
+		entire_string[i+string_2br_lenght] = (char)register_read(priv,ID_REG);
+	
+	entire_string[string_2br_lenght + rolling_length - 1] = '\n'; 
+
+	
+	if (length > (string_2br_lenght + rolling_length - *offset))							   // Determina la lunghezza del buffer da passare come minimo tra il dato in ingresso e la lunghezza della stringa diminuita sdei caratteri gia' letti (offset)
+		length = string_2br_lenght + rolling_length - *offset;
+	// length = min(lenght, string_2br_lenght + rolling_length - *offset);			 // alternativa alla modalita' precedente
+	
+	// copy_to_user(user_buffer, entire_string, length);				  // entire_string e' l' indirizzo del primo carattere contenuto nella stringa
+  copy_to_user(user_buffer, entire_string + *offset, length);		// entire_string e' l' indirizzo del primo carattere contenuto nella stringa, a cui si somma offset
+	//copy_to_user(user_buffer, &entire_string[*offset], length);	// &entire_string[*offset] e' l' indirizzo del carattere nella posizione [offset] (metodo alternativo alla riga precedente)
+	
+	kfree (entire_string);			// Libera la memoria occupata da entire_string
 	
 	*offset = *offset + length;
 

@@ -14,7 +14,7 @@
 
 
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/iopoll.h>
 #include <linux/cdev.h>
 #include <linux/idr.h>
@@ -92,31 +92,44 @@ static dev_t regs_drv_devt;						// Una tag ottenuta da una combinazione del Maj
 static int regs_id = 0; 					// Variabile globale che serve per assegnare il Minor dell'istanza del device
 
 
-// static void reg_reg_write(struct regs_priv *priv, u32 val, int offs)
+// static void reg_reg_write(struct regs_priv *priv, u32 val, int offs) 
 // {
 // 	writel(val, priv->reg_base + offs);
 // 	printk(KERN_INFO "W32 0x%x = 0x%x\n", offs, val);
 // }
-// 
-// static u32 reg_reg_read(struct regs_priv *priv, int offs)
-// {
-// 	u32 val;
-// 	val = readl(priv->reg_base + offs);
-// 	printk(KERN_INFO "R32 0x%x == 0x%x\n", offs, val);
-// 	return val;
-// }
+
+static ssize_t regs_chardev_read(struct file *f, char __user *user_buffer, size_t length,	loff_t *offset)
+{
+	
+	static const char    string_2br[]    = "Hello world from the beautyful kernel mode!\n";
+  static const ssize_t string_2br_size = sizeof(string_2br); 
+	
+	struct regs_priv *priv = f->private_data;  						// Recupera la lavagnetta
+	
+	dev_info(&priv->pdev->dev, "chardev_read executed with length: %lld", (string_2br_size - *offset));	// Stampa il messaggio in dmesg
+	
+	if (length > (string_2br_size - *offset))							   // Determina la lunghezza del buffer da passare come minimo tra il dato in ingresso e la lunghezza della stringa diminuita sdei caratteri gia' letti (offset)
+		length = string_2br_size - *offset;
+	// length = min(lenght, string_2br_size - *offset);			 // alternativa alla modalita' precedente
+	
+	// copy_to_user(user_buffer, string_2br, length);				  // string_2br e' l' indirizzo del primo carattere contenuto nella stringa
+  copy_to_user(user_buffer, string_2br+*offset, length);		// string_2br e' l' indirizzo del primo carattere contenuto nella stringa, a cui si somma offset
+	//copy_to_user(user_buffer, &string_2br[*offset], length);	// &string_2br[*offset] e' l' indirizzo del carattere nella posizione [offset] (metodo alternativo alla riga precedente)
+	
+	*offset = *offset + length;
+
+	return length; 																				// Si ritorna il numero di caratteri letti
+}
 
 static int regs_chardev_open(struct inode *i, struct file *f)
 {
-	int ret = 0;
-	u32 reg;
 	struct regs_priv *priv = 															// il puntatore *priv e' ricavato dando:
 														container_of(i->i_cdev,   	// 1. il puntatore ad un campo della struttura 
 														struct regs_priv, 					// 2. il tipo di struttura
 														regs_cdev);               	// 3. il nome del campo della struttura cui si riferisce il puntatore al punto 1
 
 	f->private_data = priv;																// Mette il puntatore alla lavagnetta, appena recuperato, nel campo private_data di f (questo serve per ritrovare nella read, write e ioctl la giusta lavagnetta)
-	dev_info(&priv->pdev->dev, "chardev_open executed");	// Se va a buon fine stampa il messaggio
+	dev_info(&priv->pdev->dev, "chardev_open executed");	// Stampa il messaggio in dmesg
 	return 0;
   }
 
@@ -124,21 +137,18 @@ static int regs_chardev_open(struct inode *i, struct file *f)
 static struct file_operations regs_fops = {												// Definisce le File Operations
 	.owner = THIS_MODULE,	
 	.open = regs_chardev_open,
-	
-//	.read = regs_chardev_read,
+	.read = regs_chardev_read,
 //	.write= regs_chardev_write,
 //	.release = regs_chardev_close,
 //	.unlocked_ioctl = regs_ioctl,
 };
 
 
-static int regs_probe(struct platform_device *pdev)
+static int regs_device_probe(struct platform_device *pdev)
 {
 	struct regs_priv *priv; 																				// Puntatore alla lavagnetta
 	struct resource *res;																						// Puntatore ad una struttura delle risorse del device
 	struct debugfs_regset32 *regset;																// Puntatore alla struttura del debug dei registri
-	unsigned int result;
-	u32 ver, tmp;
 	char buf[128];
  
 	int ret;
@@ -178,7 +188,7 @@ static int regs_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int regs_remove(struct platform_device *pdev)
+static int regs_device_remove(struct platform_device *pdev)				
 {
 	struct regs_priv *priv = platform_get_drvdata(pdev);
 
@@ -197,8 +207,8 @@ static struct of_device_id regs_of_match[] = {
 MODULE_DEVICE_TABLE(of, regs_of_match);
 
 static struct platform_driver regs_platform_driver = {
-	.probe = regs_probe,
-	.remove = regs_remove,
+	.probe = regs_device_probe,						// chiamata per ogni occorrenza di caricamento device
+	.remove = regs_device_remove,					// chiamata ad ogni occorrenza di scaricamento device
 	.driver = {
 		   .name = REGS_DRIVER_NAME,
 		   .owner = THIS_MODULE,
@@ -206,7 +216,7 @@ static struct platform_driver regs_platform_driver = {
 		   },
 };
 
-static void __exit regs_module_remove(void)
+static void __exit regs_module_remove(void)											// Viene chiamata un' unica volta quando si digita "rmmod" 
 {
 	platform_driver_unregister(&regs_platform_driver);						// deregistra il driver dal kernel
 	debugfs_remove_recursive(regs_debugfsdir);										// cancella la directory madre del driver
@@ -233,8 +243,8 @@ static int __init regs_module_init(void)
 	return 0;
 }
 
-module_init(regs_module_init);
-module_exit(regs_module_remove);
+module_init(regs_module_init);			// Funzione chiamata all' "insmod" 
+module_exit(regs_module_remove);		// Funzione chiamata al "rmmod" 
 
 MODULE_ALIAS("platform:iit-registers-axi");
 MODULE_DESCRIPTION("Register module");

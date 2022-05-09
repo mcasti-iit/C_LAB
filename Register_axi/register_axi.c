@@ -34,6 +34,7 @@
 #include <linux/interrupt.h>
 #include <linux/stringify.h>
 #include <linux/version.h>
+#include <linux/delay.h>
 
 
 /* names */
@@ -93,11 +94,13 @@ static dev_t regs_drv_devt;						// Una tag ottenuta da una combinazione del Maj
 static int regs_id = 0; 					// Variabile globale che serve per assegnare il Minor dell'istanza del device
 
 
-// static void reg_reg_write(struct regs_priv *priv, u32 val, int offs) 
-// {
-// 	writel(val, priv->reg_base + offs);
-// 	printk(KERN_INFO "W32 0x%x = 0x%x\n", offs, val);
-// }
+static void register_write(struct regs_priv *priv, u32 val, int offs) 
+{
+	writel(val, priv->reg_base + offs);
+#if REG_LOG
+	printk(KERN_INFO "W32 0x%x = 0x%x\n", offs, val);
+#endif
+}
 
 
 static u32 register_read(struct regs_priv *priv, int offs)
@@ -109,6 +112,19 @@ static u32 register_read(struct regs_priv *priv, int offs)
 #endif
 	return val;
 }
+
+
+static int regs_chardev_open(struct inode *i, struct file *f)
+{
+	struct regs_priv *priv = 															// il puntatore *priv e' ricavato dando:
+														container_of(i->i_cdev,   	// 1. il puntatore ad un campo della struttura 
+														struct regs_priv, 					// 2. il tipo di struttura
+														regs_cdev);               	// 3. il nome del campo della struttura cui si riferisce il puntatore al punto 1
+
+	f->private_data = priv;																// Mette il puntatore alla lavagnetta, appena recuperato, nel campo private_data di f (questo serve per ritrovare nella read, write e ioctl la giusta lavagnetta)
+	dev_info(&priv->pdev->dev, "chardev_open executed");	// Stampa il messaggio in dmesg
+	return 0;
+  }
 
 static ssize_t regs_chardev_read(struct file *f, char __user *user_buffer, size_t length,	loff_t *offset)
 {
@@ -169,24 +185,44 @@ static ssize_t regs_chardev_read(struct file *f, char __user *user_buffer, size_
 	return length; 																				// Si ritorna il numero di caratteri letti
 }
 
-static int regs_chardev_open(struct inode *i, struct file *f)
-{
-	struct regs_priv *priv = 															// il puntatore *priv e' ricavato dando:
-														container_of(i->i_cdev,   	// 1. il puntatore ad un campo della struttura 
-														struct regs_priv, 					// 2. il tipo di struttura
-														regs_cdev);               	// 3. il nome del campo della struttura cui si riferisce il puntatore al punto 1
 
-	f->private_data = priv;																// Mette il puntatore alla lavagnetta, appena recuperato, nel campo private_data di f (questo serve per ritrovare nella read, write e ioctl la giusta lavagnetta)
-	dev_info(&priv->pdev->dev, "chardev_open executed");	// Stampa il messaggio in dmesg
-	return 0;
-  }
+
+static ssize_t regs_chardev_write(struct file *f, const char __user *user_buffer, size_t length, loff_t *offset)
+{
+	struct regs_priv *priv = f->private_data;  																			// Recupera la lavagnetta
+	char *buffer_from_user;																													// Definisce il puntatore alla stringa
+	u32 conv_value;																																	// Definisci il valore u32 in cui si caricher'a il numero espresso in ASCII
+	int ret;																																				// Variabile temporanea di ritorno delle funzioni chiamate
+	
+	dev_info(&priv->pdev->dev, "chardev_write executed with length: %ld", length);	// Stampa il messaggio in dmesg
+	buffer_from_user = kmalloc(length+1, GFP_KERNEL);																// Alloca una porzione di memoria di lunghezza lenght alla posizione indicata dal puntatore buffer_from_user
+																																									// NOTA: il +1 serve per aggiungere il rerminatore della stringa ('\0', cioe' 0x00)
+	copy_from_user(buffer_from_user, user_buffer, length);													// Copia il buffer dallo spazio utente allo spazio kernel
+	buffer_from_user[length] = '\0';																								// Aggiungi il carattere '\0' in fondo alla stringa
+	msleep(2000);																																	  // attendi 2 secondi		
+	dev_info(&priv->pdev->dev, "%s", buffer_from_user );														// Stampa il messaggio in dmesg
+
+	ret = kstrtou32(buffer_from_user, 10, &conv_value);															// Converte in u32 la stringa passata dalla write
+	kfree (buffer_from_user);																												// Libera la memoria occupata da buffer_from_user
+	
+	if (ret) 																																				// Controlla l' esito della kstrou32
+	{
+		dev_err(&priv->pdev->dev, "String conversion failed");
+		return ret;
+	}
+	
+	register_write(priv, conv_value, REG003_REG);
+	
+	return length;
+
+}
 
 
 static struct file_operations regs_fops = {												// Definisce le File Operations
 	.owner = THIS_MODULE,	
 	.open = regs_chardev_open,
 	.read = regs_chardev_read,
-//	.write= regs_chardev_write,
+	.write= regs_chardev_write,
 //	.release = regs_chardev_close,
 //	.unlocked_ioctl = regs_ioctl,
 };

@@ -217,14 +217,23 @@ static ssize_t regs_chardev_write(struct file *f, const char __user *user_buffer
 
 }
 
+static long regs_chardev_ioctl(struct file *f, unsigned int cmd, unsigned long _arg)
+{
+	struct regs_priv *priv = f->private_data;
+	
+	dev_info(&priv->pdev->dev, "chardev_ioctl executed");
+	return 0;
+}
+
+
 
 static struct file_operations regs_fops = {												// Definisce le File Operations
 	.owner = THIS_MODULE,	
 	.open = regs_chardev_open,
 	.read = regs_chardev_read,
 	.write= regs_chardev_write,
+	.unlocked_ioctl = regs_chardev_ioctl,
 //	.release = regs_chardev_close,
-//	.unlocked_ioctl = regs_ioctl,
 };
 
 

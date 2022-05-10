@@ -63,7 +63,7 @@ int main(int argc, char* argv[])  // " argc" 'e il numero digli argomenti passat
 			return -1;
 		}
 
-	ioctl_tag = _IOW(MAGIC_NUMBER, ioctl_id, int);				// Combina le informazioni utili ad identificare la ioctl come la sintasi dellea chiamata si aspetta
+	ioctl_tag = _IOW(MAGIC_NUMBER, ioctl_id, int);				// Combina le informazioni utili ad identificare la ioctl come la sintasi della chiamata si aspetta
 
 
 	fd = open(argv[1], O_RDWR);														// Apre il file del driver a caratteri; se fallisce, fornisce il valore -1

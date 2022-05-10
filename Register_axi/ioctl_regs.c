@@ -67,14 +67,14 @@ int main(int argc, char* argv[])  // " argc" 'e il numero digli argomenti passat
 
 
 	fd = open(argv[1], O_RDWR);														// Apre il file del driver a caratteri; se fallisce, fornisce il valore -1
-	if (fd = -1)
+	if (fd == -1)
 		{
 			fprintf(stderr, "Impossibile aprire il file %s \n", argv[1]);
 			return -2;
 		}
 
 	ret = ioctl(fd, ioctl_tag, ioctl_arg);								// chiama la ioctl; se fallisce, fornisce il valore -1
-	if (ret = -1)
+	if (ret == -1)
 		{
 			fprintf(stderr, "Impossibile eseguire il comando %s \n", argv[2]);
 			return -2;

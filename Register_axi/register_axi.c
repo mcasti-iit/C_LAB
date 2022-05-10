@@ -36,6 +36,8 @@
 #include <linux/version.h>
 #include <linux/delay.h>
 
+#include "ioctl_regs_define.h"
+
 
 /* names */
 #define REGS_NAME "iit-regs"
@@ -50,6 +52,11 @@
 #define HARDWARE_REG 		  0x08
 #define REG003_REG 		    0x0C
 #define REG004_REG 		    0x10
+
+/* hardware settings */
+#define LED_ON 					BIT(26)  // Equivalente a scrivere CLKGEN_HW_RESET 0x04000000
+#define CLKGEN_HW_RESET BIT(25)  // Equivalente a scrivere CLKGEN_HW_RESET 0x02000000
+#define CLKGEN_ON 			BIT(24)  // Equivalente a scrivere CLKGEN_ON 			 0x01000000
 
 /* magic constants */
 #define REG_MAGIC			0x485055
@@ -84,12 +91,14 @@ struct regs_priv {
 	struct dentry *debugfsdir;			// Puntatore al riferimento alla directory creata dal driver nella probe dedicata al evice cui si riferisce la lavagnetta 
 	struct cdev regs_cdev;					// Un cazzurbolo che rappresenta il device a caratteri
 	dev_t regs_devt;                // Una tag ottenuta da una combinazione del Major e dal Minor; e' specifica per il device
+	// Spazio customizzato
+	u32 hw_reg;											// L'immagine dei settings hardware	
 };
 
 
 static struct dentry *regs_debugfsdir = NULL;
 
-static dev_t regs_drv_devt;						// Una tag ottenuta da una combinazione del Major e dal primo numero del Minor; e' specifica per il driver ed e' in comune con tutti i devices gestiti dal driver
+static dev_t regs_drv_devt;				// Una tag ottenuta da una combinazione del Major e dal primo numero del Minor; e' specifica per il driver ed e' in comune con tutti i devices gestiti dal driver
 
 static int regs_id = 0; 					// Variabile globale che serve per assegnare il Minor dell'istanza del device
 
@@ -217,9 +226,53 @@ static ssize_t regs_chardev_write(struct file *f, const char __user *user_buffer
 
 }
 
-static long regs_chardev_ioctl(struct file *f, unsigned int cmd, unsigned long _arg)
+static long regs_chardev_ioctl(struct file *f, unsigned int ioctl_cmd, unsigned long ioctl_arg)
 {
 	struct regs_priv *priv = f->private_data;
+
+	
+	if (ioctl_cmd == _IOW(MAGIC_NUMBER, IOCTL_CLKGEN, int)) {  			// Se il comando e' per il CLOCKGEN
+		if (ioctl_arg == RESET) {																			// Se l' argomento 'e RESET
+			register_write(priv, (priv->hw_reg | CLKGEN_HW_RESET), HARDWARE_REG);
+			usleep_range(1000, 2000);																		// Per attese brevi, dell' ordine del millisecondo, si usa usleep_range che ha una sorta di tolleranza 
+			register_write(priv, priv->hw_reg , HARDWARE_REG);
+			dev_info(&priv->pdev->dev, "Clock generator has been RESETTED");
+		}
+		else {
+			if (ioctl_arg == ON) {																			// Se l' argomento e' ON 
+				priv->hw_reg |= CLKGEN_ON;
+			}
+			else if (ioctl_arg == OFF) {																// Se l' argomento e' OFF
+				priv->hw_reg &= ~(CLKGEN_ON);															// Nota: la ~ opera come inversione bitwise
+			}
+			else {
+				dev_err(&priv->pdev->dev, "Wrong argument for GLKGEN\n");  // Nota: ridondante, gia' effettuato nel programma utente per le IOCTL
+				return -EINVAL;
+			}
+			register_write(priv, priv->hw_reg, HARDWARE_REG);
+			dev_info(&priv->pdev->dev, "Clock Generator is now %s", (ioctl_arg == ON) ? "ON" : "OFF" );			// Stampa il messaggio in dmesg, usando l' operatore ternario
+		}
+	}
+	
+	else if (ioctl_cmd == _IOW(MAGIC_NUMBER, IOCTL_LED, int)) {  	// Se il comando e' per il LED	
+		if (ioctl_arg == ON) {																			// Se l' argomento e' ON 
+			priv->hw_reg |= LED_ON;
+			}
+			else if (ioctl_arg == OFF) {																// Se l' argomento e' OFF
+			priv->hw_reg &= ~(LED_ON);																	// Nota: la ~ opera come inversione bitwise
+			}
+		else {
+			dev_err(&priv->pdev->dev, "Wrong argument for LED\n");  	// Nota: ridondante, gia' effettuato nel programma utente per le IOCTL
+		return -EINVAL;
+		}
+		register_write(priv, priv->hw_reg, HARDWARE_REG);
+		dev_info(&priv->pdev->dev, "LED is now %s", (ioctl_arg == ON) ? "ON" : "OFF" );			// Stampa il messaggio in dmesg, usando l' operatore ternario
+	}
+	
+	else {
+		dev_err(&priv->pdev->dev, "Wrong IOCTL command\n");  	// Nota: ridondante, gia' effettuato nel programma utente per le IOCTL
+		return -EINVAL;
+	}
 	
 	dev_info(&priv->pdev->dev, "chardev_ioctl executed");
 	return 0;
@@ -246,11 +299,14 @@ static int regs_device_probe(struct platform_device *pdev)
  
 	int ret;
 		
-	priv = kmalloc(sizeof(struct regs_priv), GFP_KERNEL);						// Alloca la lavagnetta
+	priv = kzalloc(sizeof(struct regs_priv), GFP_KERNEL);						// Alloca la lavagnetta azzerandola (kmalloc alloca, kzalloc alloca ed azzera)
+	
 	platform_set_drvdata(pdev, priv);																// Associa al platform_device (il device su AXI) la lavagnetta
 	priv->pdev = pdev;																							// Salva pdev(la rappresentazine del device memory mapped) nella lavagnetta 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);						// Trova nel DTS la mappatura della IP
-	priv->reg_base = devm_ioremap_resource(&pdev->dev, res);				// Chiede al Kernel di creare in MMU una entry che permetta alla CPU di arrivare all'indirirzzo fisico
+	priv->reg_base = devm_ioremap_resource(&pdev->dev, res);				// Chiede al Kernel di creare in MMU una entry che permetta alla CPU di arrivare all'indirirzzo fisico (e quindi si ha l' accesso ai registri)
+	
+	register_write(priv, priv->hw_reg , HARDWARE_REG);							// Sincronizza il registro nella FPGA con gli hardware settings presenti nella lavagnetta
 	
 	if (regs_debugfsdir) {																					// Genera una sottodirectory (con il nome del puntatore) nella cartella regs per ogni istanza del driver caricata
 		sprintf(buf, "regs.%pa", &res->start);

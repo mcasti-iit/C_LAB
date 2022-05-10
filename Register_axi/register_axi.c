@@ -139,14 +139,13 @@ static ssize_t regs_chardev_read(struct file *f, char __user *user_buffer, size_
 {
 	
 	const char    string_2br[]    = "WHO I AM:\n";
-	const ssize_t string_2br_size = sizeof(string_2br);    // Lunghezza della stringa comprendente lo 0x00 terminale aggiunto dal C
+//	const ssize_t string_2br_size = sizeof(string_2br);    // Lunghezza della stringa comprendente lo 0x00 terminale aggiunto dal C
   const ssize_t string_2br_lenght = strlen(string_2br);  // Lunghezza della stringa SENZA lo 0x00 
-	u32 reg_val; 
 	int rolling_length = 0;
-	int rolling_index = 0;
 	struct regs_priv *priv = f->private_data;  						// Recupera la lavagnetta
 	char *entire_string;
 	int i;
+	int ret;
 	
 	dev_info(&priv->pdev->dev, "chardev_read executed with length: %lld", (string_2br_lenght - *offset));	// Stampa il messaggio in dmesg
 	
@@ -179,12 +178,14 @@ static ssize_t regs_chardev_read(struct file *f, char __user *user_buffer, size_
 	entire_string[string_2br_lenght + rolling_length - 1] = '\n'; 
 
 	
-	if (length > (string_2br_lenght + rolling_length - *offset))							   // Determina la lunghezza del buffer da passare come minimo tra il dato in ingresso e la lunghezza della stringa diminuita sdei caratteri gia' letti (offset)
+	if (length > (string_2br_lenght + rolling_length - *offset))							   	// Determina la lunghezza del buffer da passare come minimo tra il dato in ingresso e la lunghezza della stringa diminuita sdei caratteri gia' letti (offset)
 		length = string_2br_lenght + rolling_length - *offset;
-	// length = min(lenght, string_2br_lenght + rolling_length - *offset);			 // alternativa alla modalita' precedente
+	// length = min(lenght, string_2br_lenght + rolling_length - *offset);			 	// alternativa alla modalita' precedente
 	
-	// copy_to_user(user_buffer, entire_string, length);				  // entire_string e' l' indirizzo del primo carattere contenuto nella stringa
-  copy_to_user(user_buffer, entire_string + *offset, length);		// entire_string e' l' indirizzo del primo carattere contenuto nella stringa, a cui si somma offset
+	// copy_to_user(user_buffer, entire_string, length);				  								// entire_string e' l' indirizzo del primo carattere contenuto nella stringa
+  ret = copy_to_user(user_buffer, entire_string + *offset, length);							// entire_string e' l' indirizzo del primo carattere contenuto nella stringa, a cui si somma offset
+	if (ret) 
+		return -EFAULT; 																															// Verifica la buona riuscita della copy_to_user
 	//copy_to_user(user_buffer, &entire_string[*offset], length);	// &entire_string[*offset] e' l' indirizzo del carattere nella posizione [offset] (metodo alternativo alla riga precedente)
 	
 	kfree (entire_string);			// Libera la memoria occupata da entire_string
@@ -206,7 +207,9 @@ static ssize_t regs_chardev_write(struct file *f, const char __user *user_buffer
 	dev_info(&priv->pdev->dev, "chardev_write executed with length: %ld", length);	// Stampa il messaggio in dmesg
 	buffer_from_user = kmalloc(length+1, GFP_KERNEL);																// Alloca una porzione di memoria di lunghezza lenght alla posizione indicata dal puntatore buffer_from_user
 																																									// NOTA: il +1 serve per aggiungere il rerminatore della stringa ('\0', cioe' 0x00)
-	copy_from_user(buffer_from_user, user_buffer, length);													// Copia il buffer dallo spazio utente allo spazio kernel
+	ret = copy_from_user(buffer_from_user, user_buffer, length);							      // Copia il buffer dallo spazio utente allo spazio kernel
+	if (ret) 
+		return -EFAULT; 																																// Verifica la buona riuscita della copy_from_user
 	buffer_from_user[length] = '\0';																								// Aggiungi il carattere '\0' in fondo alla stringa
 	msleep(2000);																																	  // attendi 2 secondi		
 	dev_info(&priv->pdev->dev, "%s", buffer_from_user );														// Stampa il messaggio in dmesg
@@ -236,7 +239,7 @@ static long regs_chardev_ioctl(struct file *f, unsigned int ioctl_cmd, unsigned 
 			register_write(priv, (priv->hw_reg | CLKGEN_HW_RESET), HARDWARE_REG);
 			usleep_range(1000, 2000);																		// Per attese brevi, dell' ordine del millisecondo, si usa usleep_range che ha una sorta di tolleranza 
 			register_write(priv, priv->hw_reg , HARDWARE_REG);
-			dev_info(&priv->pdev->dev, "Clock generator has been RESETTED");
+			dev_info(&priv->pdev->dev, "Clock generator has been RESET");
 		}
 		else {
 			if (ioctl_arg == ON) {																			// Se l' argomento e' ON 

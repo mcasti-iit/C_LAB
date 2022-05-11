@@ -54,6 +54,7 @@
 #define REG004_REG 		    0x10
 
 /* hardware settings */
+#define INT_HANDLE			BIT(27)  // Equivalente a scrivere INT_HANDLE      0x08000000
 #define LED_ON 					BIT(26)  // Equivalente a scrivere CLKGEN_HW_RESET 0x04000000
 #define CLKGEN_HW_RESET BIT(25)  // Equivalente a scrivere CLKGEN_HW_RESET 0x02000000
 #define CLKGEN_ON 			BIT(24)  // Equivalente a scrivere CLKGEN_ON 			 0x01000000
@@ -93,6 +94,7 @@ struct regs_priv {
 	dev_t regs_devt;                // Una tag ottenuta da una combinazione del Major e dal Minor; e' specifica per il device
 	// Spazio customizzato
 	u32 hw_reg;											// L'immagine dei settings hardware	
+	unsigned int irq;								// Interrupts
 };
 
 
@@ -120,6 +122,18 @@ static u32 register_read(struct regs_priv *priv, int offs)
 	printk(KERN_INFO "R32 0x%x == 0x%x\n", offs, val);
 #endif
 	return val;
+}
+
+static irqreturn_t regs_irq_handler(int irq, void *_priv)
+{
+	struct regs_priv *priv = _priv; // Cast che serve per dire all' handler che il puntatore void _priv 'e un puntatore di tipo regs_priv
+	
+	register_write(priv, (priv->hw_reg | INT_HANDLE), HARDWARE_REG);
+	udelay(1);																					// Blocca tutto per 1 microsecondo (NOTA: la udelay effettivamente manda in loop fisso il processore)
+	register_write(priv, priv->hw_reg, HARDWARE_REG);
+	
+	dev_info(&priv->pdev->dev, "Interrupt!");	// Stampa il messaggio in dmesg
+	return IRQ_HANDLED;
 }
 
 
@@ -310,6 +324,21 @@ static int regs_device_probe(struct platform_device *pdev)
 	priv->reg_base = devm_ioremap_resource(&pdev->dev, res);				// Chiede al Kernel di creare in MMU una entry che permetta alla CPU di arrivare all'indirirzzo fisico (e quindi si ha l' accesso ai registri)
 	
 	register_write(priv, priv->hw_reg , HARDWARE_REG);							// Sincronizza il registro nella FPGA con gli hardware settings presenti nella lavagnetta
+	
+	priv->irq = platform_get_irq(pdev, 0);													// Associa al campo IRQ della lavagnetta le informazioni dell'interrupt dedicato alla periferica (in arrico dal DTS)
+																																	// NOTA: lo '0' dovrebbe essere l' indice, per identificare diversi interrupts
+	if (priv->irq < 0) {																						// Verica di buon fine
+		dev_err(&pdev->dev, "Error getting irq\n");
+		return priv->irq;
+	}
+	ret =	devm_request_irq(&pdev->dev, priv->irq, regs_irq_handler, // Abilita l' interrupt e gli associa l' handler 'regs_irq_handler' 
+				IRQF_SHARED, "register_axi (culo)", priv);								// NOTA: e' la versione 'devm', quindi lo scarico viene automaticamwente gestito alla caduta del device &pdev->dev
+	if (ret) {																											// NOTA: l' ultimo parametro e' un puntatore a qualcosa che si desidera il kernel passi alla handler
+		dev_err(&pdev->dev, "Error requesting irq: %i\n",
+		       ret);
+		return ret;
+	}
+	
 	
 	if (regs_debugfsdir) {																					// Genera una sottodirectory (con il nome del puntatore) nella cartella regs per ogni istanza del driver caricata
 		sprintf(buf, "regs.%pa", &res->start);

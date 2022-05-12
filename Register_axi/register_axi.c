@@ -95,6 +95,7 @@ struct regs_priv {
 	// Spazio customizzato
 	u32 hw_reg;											// L'immagine dei settings hardware	
 	unsigned int irq;								// Interrupts
+	spinlock_t irq_lock;						// Spinlock 
 };
 
 
@@ -128,9 +129,11 @@ static irqreturn_t regs_irq_handler(int irq, void *_priv)
 {
 	struct regs_priv *priv = _priv; // Cast che serve per dire all' handler che il puntatore void _priv 'e un puntatore di tipo regs_priv
 	
+	spin_lock(&priv->irq_lock);					// Attivo lo spinlock
 	register_write(priv, (priv->hw_reg | INT_HANDLE), HARDWARE_REG);
-	udelay(1);																					// Blocca tutto per 1 microsecondo (NOTA: la udelay effettivamente manda in loop fisso il processore)
+	udelay(1);													// Blocca tutto per 1 microsecondo (NOTA: la udelay effettivamente manda in loop fisso il processore)
 	register_write(priv, priv->hw_reg, HARDWARE_REG);
+	spin_unlock(&priv->irq_lock);				// Disattivo lo spinlock
 	
 	dev_info(&priv->pdev->dev, "Interrupt!");	// Stampa il messaggio in dmesg
 	return IRQ_HANDLED;
@@ -246,16 +249,29 @@ static ssize_t regs_chardev_write(struct file *f, const char __user *user_buffer
 static long regs_chardev_ioctl(struct file *f, unsigned int ioctl_cmd, unsigned long ioctl_arg)
 {
 	struct regs_priv *priv = f->private_data;
+	unsigned long flags;																						// Flagnecessaria alle 'spin_lock_irqsave' e 'spin_unlock_irqrestore' 
 
 	
 	if (ioctl_cmd == _IOW(MAGIC_NUMBER, IOCTL_CLKGEN, int)) {  			// Se il comando e' per il CLOCKGEN
 		if (ioctl_arg == RESET) {																			// Se l' argomento 'e RESET
-			register_write(priv, (priv->hw_reg | CLKGEN_HW_RESET), HARDWARE_REG);
+			
+			spin_lock_irqsave(&priv->irq_lock, flags);									// Attivo lo spinlock
+			priv->hw_reg |= CLKGEN_HW_RESET;
+			register_write(priv, priv->hw_reg, HARDWARE_REG);
+			spin_unlock_irqrestore(&priv->irq_lock, flags);							// Disattivo lo spinlock
+			
 			usleep_range(1000, 2000);																		// Per attese brevi, dell' ordine del millisecondo, si usa usleep_range che ha una sorta di tolleranza 
+			
+			spin_lock_irqsave(&priv->irq_lock, flags);									// Attivo lo spinlock
+			priv->hw_reg &= ~(CLKGEN_HW_RESET);
 			register_write(priv, priv->hw_reg , HARDWARE_REG);
+			spin_unlock_irqrestore(&priv->irq_lock, flags);							// Disattivo lo spinlock
+			
 			dev_info(&priv->pdev->dev, "Clock generator has been RESET");
 		}
 		else {
+			
+			spin_lock_irqsave(&priv->irq_lock, flags);									// Attivo lo spinlock
 			if (ioctl_arg == ON) {																			// Se l' argomento e' ON 
 				priv->hw_reg |= CLKGEN_ON;
 			}
@@ -263,26 +279,33 @@ static long regs_chardev_ioctl(struct file *f, unsigned int ioctl_cmd, unsigned 
 				priv->hw_reg &= ~(CLKGEN_ON);															// Nota: la ~ opera come inversione bitwise
 			}
 			else {
+				spin_unlock_irqrestore(&priv->irq_lock, flags);						// Disattivo lo spinlock
 				dev_err(&priv->pdev->dev, "Wrong argument for GLKGEN\n");  // Nota: ridondante, gia' effettuato nel programma utente per le IOCTL
 				return -EINVAL;
 			}
 			register_write(priv, priv->hw_reg, HARDWARE_REG);
+			spin_unlock_irqrestore(&priv->irq_lock, flags);						// Disattivo lo spinlock
 			dev_info(&priv->pdev->dev, "Clock Generator is now %s", (ioctl_arg == ON) ? "ON" : "OFF" );			// Stampa il messaggio in dmesg, usando l' operatore ternario
 		}
 	}
 	
 	else if (ioctl_cmd == _IOW(MAGIC_NUMBER, IOCTL_LED, int)) {  	// Se il comando e' per il LED	
+		
+		spin_lock_irqsave(&priv->irq_lock, flags);									// Attivo lo spinlock
 		if (ioctl_arg == ON) {																			// Se l' argomento e' ON 
 			priv->hw_reg |= LED_ON;
 			}
-			else if (ioctl_arg == OFF) {																// Se l' argomento e' OFF
-			priv->hw_reg &= ~(LED_ON);																	// Nota: la ~ opera come inversione bitwise
+			else if (ioctl_arg == OFF) {															// Se l' argomento e' OFF
+			priv->hw_reg &= ~(LED_ON);																// Nota: la ~ opera come inversione bitwise
 			}
 		else {
+			spin_unlock_irqrestore(&priv->irq_lock, flags);						// Disattivo lo spinlock
 			dev_err(&priv->pdev->dev, "Wrong argument for LED\n");  	// Nota: ridondante, gia' effettuato nel programma utente per le IOCTL
 		return -EINVAL;
 		}
 		register_write(priv, priv->hw_reg, HARDWARE_REG);
+		spin_unlock_irqrestore(&priv->irq_lock, flags);							// Disattivo lo spinlock
+		
 		dev_info(&priv->pdev->dev, "LED is now %s", (ioctl_arg == ON) ? "ON" : "OFF" );			// Stampa il messaggio in dmesg, usando l' operatore ternario
 	}
 	
@@ -317,6 +340,8 @@ static int regs_device_probe(struct platform_device *pdev)
 	int ret;
 		
 	priv = kzalloc(sizeof(struct regs_priv), GFP_KERNEL);						// Alloca la lavagnetta azzerandola (kmalloc alloca, kzalloc alloca ed azzera)
+	
+	spin_lock_init(&priv->irq_lock);																// Inizializza lo spin_lock (la macro vuole il puntatore)
 	
 	platform_set_drvdata(pdev, priv);																// Associa al platform_device (il device su AXI) la lavagnetta
 	priv->pdev = pdev;																							// Salva pdev(la rappresentazine del device memory mapped) nella lavagnetta 

@@ -44,7 +44,7 @@
 #define AD9522_DRIVER_NAME AD9522_NAME"-driver"
 #define AD9522_CLASS_NAME AD9522_NAME"-class"
 #define AD9522_DEV_NAME AD9522_NAME"-dev"
-#define AD9522_NAME_FMT AD9522_NAME"%d"
+#define AD9522_NAME_FMT AD9522_NAME"-%d"
 
 // --------
 #define MAGIC_NUMBER 32
@@ -55,6 +55,8 @@
 
 static const char    driver_load_string[] = "AD9522 driver module is loaded!\n\0";
 static const ssize_t driver_load_string_size = sizeof(driver_load_string);
+
+static struct class  *AD9522_class = NULL;
 
 
 
@@ -288,10 +290,11 @@ static struct file_operations AD9522_fops =
 static int AD9522_register_chardev(struct AD9522_priv *priv)
 {
 	int ret;
+	struct device *pret;
 	
 	cdev_init(&priv->cdev, &AD9522_fops);
 	priv->cdev.owner = THIS_MODULE;
-	priv->devt = MKDEV(MAJOR(AD9522_devt), minor++);	// Assegna la variabile AD9522_devt, univoca per l'istanza del device
+	priv->devt = MKDEV(MAJOR(AD9522_devt), minor);	// Assegna la variabile AD9522_devt, univoca per l'istanza del device
 	
 	ret = cdev_add(&priv->cdev, priv->devt, 1);
 	if (ret) {
@@ -301,13 +304,25 @@ static int AD9522_register_chardev(struct AD9522_priv *priv)
 
 	dev_info(&priv->client->dev, "Registered device major: %d, minor:%d\n",
 	       MAJOR(priv->devt), MINOR(priv->devt));
+	
+	pret = device_create(AD9522_class, NULL, priv->devt, priv,		// Serve ad una serie di cose, tra cui popolare la sys/class con le informazioi del device
+		     AD9522_NAME_FMT, minor);
+	if (IS_ERR(pret)) {
+		dev_err(&priv->client->dev, "Cannot create entry point of device\n");
+		cdev_del(&priv->cdev);			// Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
+		return PTR_ERR(pret);
+	}
+	
+	minor++;
+
 
 	return 0;
 }
 
 static int AD9522_unregister_chardev(struct AD9522_priv *priv)
 {
-	cdev_del(&priv->cdev);
+	device_destroy(AD9522_class, priv->devt);		// Distrugge il device creato con device_create
+	cdev_del(&priv->cdev);											// Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
 	return 0;
 }
 
@@ -367,10 +382,6 @@ static struct i2c_driver AD9522_driver = {
 };
 
 
-
-
-
-
 static int AD8522_drv_init(void)
 {
 	int ret;
@@ -388,9 +399,29 @@ static int AD8522_drv_init(void)
     printk( KERN_NOTICE "Registered AD9522 character device with major number = %u\n", MAJOR(AD9522_devt) );
 		// dev_info(&client->dev, "Registered character device with major number = %u\n", MAJOR(AD9522_devt) );	
     
+	AD9522_class = class_create(THIS_MODULE, AD9522_CLASS_NAME); 	// Crea la classe per il drive; il Kernel crea anche la directory associata
+	if (IS_ERR(AD9522_class)) {
+		printk(KERN_ALERT "Error creating class " AD9522_CLASS_NAME " \n");
+		ret = PTR_ERR(AD9522_class);																// Estrae dal puntatore un codice di errore
+		goto unreg_chrreg;
+	}	
 	
 	ret = i2c_add_driver(&AD9522_driver); 
+	if (ret < 0) {
+		printk(KERN_ALERT "Error registering i2c driver "
+		 	AD9522_DRIVER_NAME " \n"); 
+		goto unreg_class;
+	}	
 	
+	goto exit;
+	
+unreg_class:
+	class_destroy(AD9522_class);														  // Distrugge la classe
+	
+unreg_chrreg: 
+	unregister_chrdev_region(AD9522_devt, AD9522_MINOR_COUNT);	
+	
+exit:		
 	return ret;
 	
 }
@@ -398,11 +429,11 @@ static int AD8522_drv_init(void)
 
 static void AD8522_drv_exit(void)
 {
-	i2c_del_driver(&AD9522_driver); 
+	i2c_del_driver(&AD9522_driver); 															// Scarica il driver
+	class_destroy(AD9522_class);														  		// Distrugge la classe
+	unregister_chrdev_region(AD9522_devt, AD9522_MINOR_COUNT);		// Scarica la chrdev region
 	
-	unregister_chrdev_region(AD9522_devt, AD9522_MINOR_COUNT);
 	printk( KERN_NOTICE "Unregistered AD9522 character device with major number = %u\n", MAJOR(AD9522_devt) );
-	// dev_info(&client->dev, "Unregistered character device with major number = %u\n", MAJOR(AD9522_devt) );
 	
 }
     

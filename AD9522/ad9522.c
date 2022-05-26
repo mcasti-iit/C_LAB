@@ -6,7 +6,9 @@
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 
+#include "ad9522_define.h"
 
+# define SERIAL_PORT_CONFIG_ADDR		0x0000	// RD
 # define SILICON_REV_ADDR						0x0002	// RD
 # define PART_ID_ADDR								0x0003	// RD
 # define PDF_CHARGE_PUMP_ADDR 			0x0010  // WR
@@ -35,6 +37,7 @@
 # define INPUT_CLKS_ADDR 						0x01E1  // WR
 # define IO_UPDATE_ADDR 						0x0232  // WC
 
+# define REG_LOG 1
 
 /* max Eyes that can be handled */
 #define AD9522_MINOR_COUNT 10
@@ -46,12 +49,6 @@
 #define AD9522_DEV_NAME AD9522_NAME"-dev"
 #define AD9522_NAME_FMT AD9522_NAME"-%d"
 
-// --------
-#define MAGIC_NUMBER 32
-
-#define IOCTL_CMD_1   1
-#define IOCTL_CMD_2   2
-#define IOCTL_CMD_3   3
 
 static const char    driver_load_string[] = "AD9522 driver module is loaded!\n\0";
 static const ssize_t driver_load_string_size = sizeof(driver_load_string);
@@ -65,6 +62,7 @@ static dev_t AD9522_devt;					// Una tag ottenuta da una combinazione del Major 
 
 struct AD9522_priv {							// La Lavagnetta
 	struct i2c_client *client;			// Puntatore al client I2C
+	struct regmap *regmap;					// Puntatore alla struttura regmap
 	struct cdev cdev;								// Un cazzurbolo che rappresenta il device a caratteri
 	dev_t devt;											// Una tag ottenuta da una combinazione del Major e dal Minor; e' specifica per il device
 	// Spazio customizzato
@@ -74,7 +72,7 @@ struct AD9522_priv {							// La Lavagnetta
 static int minor = 0;
 
 static const struct of_device_id __maybe_unused AD9522_of_match[] = {
-	{ .compatible = "iit.clkgen" },
+	{ .compatible = "iit.clkgen" }, 
 	{ },
 };
 
@@ -82,6 +80,7 @@ static const struct of_device_id __maybe_unused AD9522_of_match[] = {
 static bool AD9522_regmap_precious(struct device *dev, unsigned int reg)	// Dichiarazione dei registri "precious" 
 {
 	switch (reg) {
+		case SERIAL_PORT_CONFIG_ADDR:
 		case IO_UPDATE_ADDR:
 			return true;
 		default:
@@ -93,6 +92,7 @@ static bool AD9522_regmap_precious(struct device *dev, unsigned int reg)	// Dich
 static bool AD9522_regmap_volatile(struct device *dev, unsigned int reg)	// Dichiarazione dei registri "volatile" 
 {
 	switch (reg) {
+		case SERIAL_PORT_CONFIG_ADDR:
 		case PLL_READBACK_ADDR:
 			return true;
 		default:
@@ -102,8 +102,8 @@ static bool AD9522_regmap_volatile(struct device *dev, unsigned int reg)	// Dich
 
 static bool AD9522_regmap_writeable(struct device *dev, unsigned int reg)	// Dichiarazione dei registri "writeable" 
 {
-	switch (reg) {
-					
+	switch (reg) {					
+		case SERIAL_PORT_CONFIG_ADDR:
 		case PDF_CHARGE_PUMP_ADDR:
 		case R_COUNTER_LSB_ADDR:
 		case R_COUNTER_MSB_ADDR:
@@ -137,6 +137,7 @@ static bool AD9522_regmap_writeable(struct device *dev, unsigned int reg)	// Dic
 static bool AD9522_regmap_readable(struct device *dev, unsigned int reg)	// Dichiarazione dei registri "readable" 
 {
 	switch (reg) {
+		case SERIAL_PORT_CONFIG_ADDR:
 		case SILICON_REV_ADDR:
 		case PART_ID_ADDR:
 		case PDF_CHARGE_PUMP_ADDR:
@@ -185,9 +186,124 @@ static bool AD9522_regmap_readable(struct device *dev, unsigned int reg)	// Dich
 				
 // Opzionale
 //static const struct i2c_device_id AD9522_id[] = {
-//	{ "ED-Eye", 0 },
+//	{ "AD9522 PLL Clock Generator", 0 },
 //        { }
 //	};
+
+u16 gtfreq_125_tab [][2]= {		//	Name						-	Note
+	{0x0010, 0x7C},							//	PDF_CHARGE_PUMP	-	Deasserts power-down
+	{0x0011, 0x08},							//	R_COUNTER_LSB		-	Sets R counter LSB
+	{0x0012, 0x00},							//	R_COUNTER_MSB		-	Sets R counter MSB
+	{0x0013, 0x00},							//	A_COUNTER				-	Sets A counter
+	{0x0014, 0x19},							//	B_COUNTER_LSB		-	Sets B counter LSB
+	{0x0015, 0x00},							//	B_CUNTER_MSB		-	Sets B counter MSB
+	{0x0016, 0x05},							//	PLL_CTRL_1			-	Sets P prescaler
+											
+	{0x0018, 0x06},							//	PLL_CTRL_3			-	(Set default value)
+	{0x001C, 0x02},							//	PLL_CTRL_7			-	Enable Ref1 clock
+	{0x0232, 0x01},							//	IO_UPDATE				-	Apply
+											
+	{0x0017, 0x00},							//	PLL_CTRL_2			-	(Set default value)
+	{0x0018, 0x06},							//	PLL_CTRL_3			-	(Set default value)
+	{0x0019, 0x00},							//	PLL_CTRL_4			-	(Set default value)
+	{0x001A, 0x00},							//	PLL_CTRL_5			-	(Set default value)
+	{0x001B, 0xA0},							//	PLL_CTRL_6			-	Enables freq monitor
+	{0x001C, 0x02},							//	PLL_CTRL_7			-	Enables REF1 clock
+	{0x001D, 0x80},							//	PLL_CTRL_8			-	(Set default value)
+	{0x001E, 0x00},							//	PLL_CTRL_9			-	(Set default value)
+											
+	{0x01E0, 0x00},							//	VCO_DIVIDER			-	Sets VCO divider
+	{0x01E1, 0x02},							//	INPUT_CLKS			-	Selects VCO as source
+											
+	{0x0018, 0x06},							//	PLL_CTRL_3			-	(Set default value)
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+	{0x0018, 0x07},							//	PLL_CTRL_3			-	Starts VCO calibration
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+											
+	{0x0193, 0x44},							//	DIVIDER_1				-	Sets low and high cycles for DIVIDER 1
+	{0x0199, 0x44},							//	DIVIDER_3				-	Sets low and high cycles for DIVIDER 3
+											
+	{0x0018, 0x06},							//	PLL_CTRL_3			-	(Set default value)
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+	{0x0018, 0x07},							//	PLL_CTRL_3			-	Starts VCO calibration
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+};
+
+u16 gtouten_tab [][2]= {		//	Name						-	Note
+	{0x00F3, 0x62},							//	OUT3_CONTROL		-	Sets output format for OUT3 and enables it
+	{0x00F4, 0x62},							//	OUT4_CONTROL		-	Sets output format for OUT4 and enables it
+	{0x00F5, 0x62},							//	OUT5_CONTROL		-	Sets output format for OUT5 and enables it
+	{0x00FA, 0xE2},							//	OUT10_CONTROL		-	Sets output format for OUT10 and enables it
+											
+	{0x0018, 0x06},							//	PLL_CTRL_3			-	(Set default value)
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+	{0x0018, 0x07},							//	PLL_CTRL_3			-	Starts VCO calibration
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+};
+
+u16 spouten_tab [][2]= {			//	Name						-	Note
+	{0x00FA, 0xE2},							//	OUT10_CONTROL		-	Sets output format for OUT10 and enables it
+											
+	{0x0018, 0x06},							//	PLL_CTRL_3			-	(Set default value)
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+	{0x0018, 0x07},							//	PLL_CTRL_3			-	Starts VCO calibration
+	{0x0232, 0x01},							//	IO_UPDATE				-	Applies settings
+};
+
+
+static int ad9522_write(struct AD9522_priv *priv, u16 addr, u8 value) 
+{
+	int ret;
+	ret = regmap_write(priv->regmap, (unsigned int)addr, (unsigned int)value);
+
+	if (ret < 0) 																															 													// 	Se non va a buon fine
+		dev_err(&priv->client->dev, "Unable to write at address: 0x%03X\n", addr);	                      // 	- stampa il messaggio di errore 		
+	else
+#if REG_LOG																																														// Altrimenti, se REG_LOG e' diverso da zero,
+		dev_info(&priv->client->dev, "Wrote 0x%02x at address 0x%03x\n", value, addr);										// stampa il messaggio di conferma
+#endif
+	
+	return ret;
+}
+
+
+static int ad9522_read(struct AD9522_priv *priv, u16 addr, u8 *value)
+{
+	int ret;
+	unsigned int intvalue;																																							// Serve una variabile di appoggio "unsigned int" 
+	ret = regmap_read(priv->regmap, (unsigned int)addr, &intvalue);																			// perche' regmap scrive un unsigned int 
+	*value = (u8)intvalue;																																							// che poi viene "castato"  ad u8
+	// ret = regmap_read(priv->regmap, (unsigned int)addr, (unsigned int*)value);
+
+	if (ret < 0) 																															 													// 	Se non va a buon fine
+		dev_err(&priv->client->dev, "Unable to read at address: 0x%03X\n", addr);	                        // 	- stampa il messaggio di errore 		
+	else
+#if REG_LOG
+		dev_info(&priv->client->dev, "Read 0x%02x at address 0x%03x\n", *value, addr);
+#endif
+
+	return ret;
+}
+
+static int write_reg_tab(struct AD9522_priv *priv, u16 reg_tab [][2], int len)
+{
+	int ret;
+	int i;
+	
+
+	for (i = 0; i < len; i++) 
+	{
+		ret = ad9522_write(priv, reg_tab[i][0], (u8)reg_tab[i][1]);
+		if (ret < 0) {																															 													// 	Se non va a buon fine
+			dev_err(&priv->client->dev, "Abort: unable to write at address: 0x%03X\n",reg_tab[i][0]  );					// 	- stampa il messaggio di errore 
+   		return ret;																																													// 	- ed esce
+		}
+	}
+	dev_info(&priv->client->dev, "%d Registers wrote", len);																								// Altrimenti stampa il messaggio di conferma
+	return ret;
+}
+
+
 
 // ************************************************************************************************************************************************************
 // FILE OPERATION
@@ -252,21 +368,90 @@ static long device_file_ioctl(
                        , unsigned long ioctl_arg)
 {
 	
-	struct AD9522_priv *priv = f->private_data;
-	
+	struct AD9522_priv *priv = f->private_data; 
+	int ret ;
+	u8  value;
 
+
+// *** POWDOWN ***	
+if (ioctl_cmd == _IO(MAGIC_NUMBER, POWDOWN_CMD)) {
+	dev_info(&priv->client->dev, "IOCTL POWDOWN COMMAND has been called\n");
 	
-// 	if (ioctl_cmd == _IOW(MAGIC_NUMBER, IOCTL_CMD_1, int*)) {
-// 			printk( KERN_WARNING "Mauri-driver:  IOCTL WRITE COMMAND has been called\n");
-// 			copy_from_user(&priv->ioctl_value, (void*)ioctl_arg, sizeof(int));
-// 	}
-// 	
+	ret = ad9522_write(priv, PDF_CHARGE_PUMP_ADDR, 0x7D);
+	
+	return ret;	 
+}
+
+// ***  POWUP ***	
+if (ioctl_cmd == _IO(MAGIC_NUMBER, POWUP_CMD)) {
+	dev_info(&priv->client->dev, "IOCTL POWUP COMMAND has been called\n");
+	
+	ret = ad9522_write(priv, PDF_CHARGE_PUMP_ADDR, 0x7C);
+
+	return ret;	 
+}
+
+// ***  RESET ***	
+if (ioctl_cmd == _IO(MAGIC_NUMBER, RESET_CMD)) {
+	dev_info(&priv->client->dev, "IOCTL RESET COMMAND has been called\n");
+	
+	ret = ad9522_write(priv, SERIAL_PORT_CONFIG_ADDR, 0x24);
+
+	return ret;	 
+}
+
+// *** STATUS ***	
+if (ioctl_cmd == _IOR(MAGIC_NUMBER, STATUS_CMD, int*)) {
+	dev_info(&priv->client->dev, "IOCTL STATUS COMMAND has been called\n");
+	
+	ret = ad9522_read(priv, PLL_READBACK_ADDR, &value);
+	
+	if (ret == 0)
+		ret = copy_to_user((void*)ioctl_arg, &value, sizeof(value));
+	return ret;	 
+}
+
+// *** INIT ***	
+else if (ioctl_cmd == _IO(MAGIC_NUMBER, INIT_CMD)) {
+	dev_info(&priv->client->dev, "IOCTL INIT COMMAND has been called\n");
+
+	ret = write_reg_tab(priv, gtfreq_125_tab, ARRAY_SIZE(gtfreq_125_tab));
+	
+	usleep_range(1000, 2000);																		// Per attese brevi, dell' ordine del millisecondo, si usa usleep_range che ha una sorta di tolleranza 
+
+
+	return ret;
+}
+ 
+// *** ENGTCLK ***
+else if (ioctl_cmd == _IO(MAGIC_NUMBER, ENGTCLK_CMD)) {
+	dev_info(&priv->client->dev, "IOCTL ENGTCLK_CMD COMMAND has been called\n");
+	
+	ret = write_reg_tab(priv, gtouten_tab, ARRAY_SIZE(gtouten_tab));
+	
+	return ret;
+}	
+	
+	
+// *** ENSPCLK ***
+else if (ioctl_cmd == _IO(MAGIC_NUMBER, ENSPCLK_CMD)) {
+	dev_info(&priv->client->dev, "IOCTL ENSPCLK_CMD COMMAND has been called\n");
+
+	ret = write_reg_tab(priv, spouten_tab, ARRAY_SIZE(spouten_tab));
+	
+	return ret;
+}
+	
+	
 // 	if (ioctl_cmd == _IOR(MAGIC_NUMBER, IOCTL_CMD_2, int*)) {
 // 			printk( KERN_WARNING "Mauri-driver:  IOCTL READ COMMAND has been called\n");	
 // 			copy_to_user((void*)ioctl_arg, &priv->ioctl_value, sizeof(int));
 // 	}
 	
-
+	else {
+		dev_err(&priv->client->dev, "Wrong IOCTL command\n");  	// Nota: ridondante, gia' effettuato nel programma utente per le IOCTL
+		return -EINVAL;
+	}
 	
 	return 0;
 }
@@ -292,37 +477,35 @@ static int AD9522_register_chardev(struct AD9522_priv *priv)
 	int ret;
 	struct device *pret;
 	
-	cdev_init(&priv->cdev, &AD9522_fops);
-	priv->cdev.owner = THIS_MODULE;
-	priv->devt = MKDEV(MAJOR(AD9522_devt), minor);	// Assegna la variabile AD9522_devt, univoca per l'istanza del device
-	
-	ret = cdev_add(&priv->cdev, priv->devt, 1);
-	if (ret) {
-		dev_err(&priv->client->dev, "Cannot add chrdev \n");
-		return ret;
-	}
-
-	dev_info(&priv->client->dev, "Registered device major: %d, minor:%d\n",
-	       MAJOR(priv->devt), MINOR(priv->devt));
-	
-	pret = device_create(AD9522_class, NULL, priv->devt, priv,		// Serve ad una serie di cose, tra cui popolare la sys/class con le informazioi del device
-		     AD9522_NAME_FMT, minor);
-	if (IS_ERR(pret)) {
-		dev_err(&priv->client->dev, "Cannot create entry point of device\n");
-		cdev_del(&priv->cdev);			// Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
-		return PTR_ERR(pret);
-	}
-	
-	minor++;
-
-
-	return 0;
-}
-
-static int AD9522_unregister_chardev(struct AD9522_priv *priv)
-{
-	device_destroy(AD9522_class, priv->devt);		// Distrugge il device creato con device_create
-	cdev_del(&priv->cdev);											// Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
+	cdev_init(&priv->cdev, &AD9522_fops);																					// Inizializza la regs_cdev
+	priv->cdev.owner = THIS_MODULE;																								// Fa una cosa che non sappiamo a che serva, ma serve.
+	priv->devt = MKDEV(MAJOR(AD9522_devt), minor);																// Assegna la variabile devt, univoca per l'istanza del device
+				
+	ret = cdev_add(&priv->cdev, priv->devt, 1);																		// Concretizza ed abilita la cdev
+	if (ret) {																																		// 	Se non va a buon fine
+		dev_err(&priv->client->dev, "Cannot add chrdev \n");												// 	stampa il messaggio di errore 
+		return ret;																																	// 	ed esce
+	}			
+	dev_info(&priv->client->dev, "Registered device major: %d, minor:%d\n",				// 	Se invece va a buon fine stampa il messaggio 
+	       MAJOR(priv->devt), MINOR(priv->devt));																	// 	con il Major ed il Minor
+				
+	pret = device_create(AD9522_class, NULL, priv->devt, priv,										// Serve ad una serie di cose, tra cui popolare la sys/class 
+		     AD9522_NAME_FMT, minor);																								// con le informazioi del device
+	if (IS_ERR(pret)) {																														// 	Se non va a buon fine
+		dev_err(&priv->client->dev, "Cannot create entry point of device\n");				// 	- stampa il messaggio di errore 
+		cdev_del(&priv->cdev);																											// 	- deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
+		return PTR_ERR(pret);																												// 	- ed esce
+	}			
+				
+	minor++;																																			// Incremente il valore del Minor (modo becero... i valori eventualmente rilasciati non vengono riutilizzati)
+			
+	return 0;			
+}			
+			
+static int AD9522_unregister_chardev(struct AD9522_priv *priv) 			
+{			
+	device_destroy(AD9522_class, priv->devt);																			// Distrugge il device creato con device_create
+	cdev_del(&priv->cdev);																												// Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
 	return 0;
 }
 
@@ -334,27 +517,34 @@ static int AD9522_i2c_probe(struct i2c_client *client)
 	int part_id_reg;
 	struct AD9522_priv *priv;
         
-	struct regmap *regmap = devm_regmap_init_i2c(client, &AD9522_regmap_config);
-	priv = devm_kmalloc(&client->dev, sizeof(struct AD9522_priv), GFP_KERNEL);
-	priv->client = client;
+	struct regmap *regmap; 
 	
-	i2c_set_clientdata(client, priv);
-  	
-	if (IS_ERR(regmap)) {
-		dev_err(&client->dev, "Unable to init register map");
-   	return PTR_ERR(regmap);
+	regmap = devm_regmap_init_i2c(client, &AD9522_regmap_config);									// Inizializza in modo "managed" la reg map
+	if (IS_ERR(regmap)) {																													// 	Se non va a buon fine
+		dev_err(&client->dev, "Unable to init register map");												// 	- stampa il messaggio di errore 
+   	return PTR_ERR(regmap);																											// 	- ed esce
 	}
+	
 
-	ret= regmap_read(regmap, PART_ID_ADDR, &part_id_reg);
-	if (ret < 0) {
-		dev_err(&client->dev, "Unable to read in register map");
-   	return ret;
+	
+	priv = devm_kmalloc(&client->dev, sizeof(struct AD9522_priv), GFP_KERNEL);		// Alloca in modo "managed" la priv (lavagnetta)
+	priv->client = client;																												// - vi appunta il client passato dal kernel
+	priv->regmap = regmap;																												// - vi appunta il puntatore alla regmap 
+	
+	i2c_set_clientdata(client, priv);																							// Associa la priv alla struttura i2c_client		
+
+	ret = regmap_read(priv->regmap, PART_ID_ADDR, &part_id_reg);												//	Verifica la leggibilita' della regmap leggendo un registro
+	if (ret < 0) {																																// 	Se non va a buon fine
+		dev_err(&client->dev, "Unable to read in register map");										// 	- stampa il messaggio di errore 
+   	return ret;																																	// 	- ed esce
 	}	              
 	
-	dev_info(&client->dev, "Found CLOCK GENERATOR device, PART_ID: 0x%04X\n", part_id_reg);	
+	dev_info(&client->dev, "Found CLOCK GENERATOR device, PART_ID: 0x%04X\n", 		// Stampa il valore del registro letto
+					 	part_id_reg);	
 	
-		
-	return AD9522_register_chardev(priv);
+	ret = AD9522_register_chardev(priv);																					// Registra il device a caratteri
+	
+	return ret;
 			
 } 
 
@@ -382,7 +572,7 @@ static struct i2c_driver AD9522_driver = {
 };
 
 
-static int AD8522_drv_init(void)
+static int AD9522_module_init(void)
 {
 	int ret;
 
@@ -392,12 +582,12 @@ static int AD8522_drv_init(void)
 	if (ret < 0) {
 		printk(KERN_ALERT "Error allocating chrdev region for driver "
 		 	AD9522_DRIVER_NAME " \n");
-		// dev_err(&client->dev, "Error allocating chrdev region for driver");	
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto exit;
 	}
    
     printk( KERN_NOTICE "Registered AD9522 character device with major number = %u\n", MAJOR(AD9522_devt) );
-		// dev_info(&client->dev, "Registered character device with major number = %u\n", MAJOR(AD9522_devt) );	
+		printk( KERN_NOTICE "Found a register set of  = %lu\n", ARRAY_SIZE(gtfreq_125_tab) );
     
 	AD9522_class = class_create(THIS_MODULE, AD9522_CLASS_NAME); 	// Crea la classe per il drive; il Kernel crea anche la directory associata
 	if (IS_ERR(AD9522_class)) {
@@ -416,10 +606,10 @@ static int AD8522_drv_init(void)
 	goto exit;
 	
 unreg_class:
-	class_destroy(AD9522_class);														  // Distrugge la classe
+	class_destroy(AD9522_class);														  		// Distrugge la classe
 	
 unreg_chrreg: 
-	unregister_chrdev_region(AD9522_devt, AD9522_MINOR_COUNT);	
+	unregister_chrdev_region(AD9522_devt, AD9522_MINOR_COUNT);		// Scarica la chrdev_region
 	
 exit:		
 	return ret;
@@ -427,18 +617,18 @@ exit:
 }
     
 
-static void AD8522_drv_exit(void)
+static void AD9522_module_exit(void)
 {
 	i2c_del_driver(&AD9522_driver); 															// Scarica il driver
 	class_destroy(AD9522_class);														  		// Distrugge la classe
-	unregister_chrdev_region(AD9522_devt, AD9522_MINOR_COUNT);		// Scarica la chrdev region
+	unregister_chrdev_region(AD9522_devt, AD9522_MINOR_COUNT);		// Scarica la chrdev_region allocata con alloc_chrdev_region
 	
 	printk( KERN_NOTICE "Unregistered AD9522 character device with major number = %u\n", MAJOR(AD9522_devt) );
 	
 }
     
-module_init(AD8522_drv_init);
-module_exit(AD8522_drv_exit); 
+module_init(AD9522_module_init);
+module_exit(AD9522_module_exit); 
 
 
 

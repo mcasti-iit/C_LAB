@@ -44,7 +44,7 @@
 #define REGS_DRIVER_NAME REGS_NAME"-driver"
 #define REGS_CLASS_NAME REGS_NAME"-class"
 #define REGS_DEV_NAME REGS_NAME"-dev"
-#define REGS_NAME_FMT REGS_NAME"%d"
+#define REGS_NAME_FMT REGS_NAME"-%d"
 
 /* registers */
 #define ID_REG 					  0x00
@@ -86,12 +86,12 @@ typedef struct ip_regs {
 } ip_regs_t;
 
 
-struct regs_priv {
+struct regs_priv {								// La Lavagnetta
 	struct platform_device *pdev;		// Puntatore alla platform device
 	void __iomem *reg_base;					// Puntatore al primo indirizzo dell'area di memoria virtuale (vista cio'e dal lato del uP prima della MMU)
 	struct dentry *debugfsdir;			// Puntatore al riferimento alla directory creata dal driver nella probe dedicata al evice cui si riferisce la lavagnetta 
-	struct cdev regs_cdev;					// Un cazzurbolo che rappresenta il device a caratteri
-	dev_t regs_devt;                // Una tag ottenuta da una combinazione del Major e dal Minor; e' specifica per il device
+	struct cdev cdev;								// Un cazzurbolo che rappresenta il device a caratteri
+	dev_t devt;                			// Una tag ottenuta da una combinazione del Major e dal Minor; e' specifica per il device
 	// Spazio customizzato
 	u32 hw_reg;											// L'immagine dei settings hardware	
 	unsigned int irq;								// Interrupts
@@ -100,8 +100,9 @@ struct regs_priv {
 
 
 static struct dentry *regs_debugfsdir = NULL;
+static struct class  *regs_class = NULL;
 
-static dev_t regs_drv_devt;				// Una tag ottenuta da una combinazione del Major e dal primo numero del Minor; e' specifica per il driver ed e' in comune con tutti i devices gestiti dal driver
+static dev_t regs_devt;				// Una tag ottenuta da una combinazione del Major e dal primo numero del Minor; e' specifica per il driver ed e' in comune con tutti i devices gestiti dal driver
 
 static int regs_id = 0; 					// Variabile globale che serve per assegnare il Minor dell'istanza del device
 
@@ -145,7 +146,7 @@ static int regs_chardev_open(struct inode *i, struct file *f)
 	struct regs_priv *priv = 															// il puntatore *priv e' ricavato dando:
 														container_of(i->i_cdev,   	// 1. il puntatore ad un campo della struttura 
 														struct regs_priv, 					// 2. il tipo di struttura
-														regs_cdev);               	// 3. il nome del campo della struttura cui si riferisce il puntatore al punto 1
+														cdev);               				// 3. il nome del campo della struttura cui si riferisce il puntatore al punto 1
 
 	f->private_data = priv;																// Mette il puntatore alla lavagnetta, appena recuperato, nel campo private_data di f (questo serve per ritrovare nella read, write e ioctl la giusta lavagnetta)
 	dev_info(&priv->pdev->dev, "chardev_open executed");	// Stampa il messaggio in dmesg
@@ -330,6 +331,44 @@ static struct file_operations regs_fops = {												// Definisce le File Oper
 };
 
 
+static int regs_register_chardev(struct regs_priv *priv)
+{
+	int ret;
+	struct device *pret;	
+	
+	cdev_init(&priv->cdev, &regs_fops);																			// Inizializza la cdev
+	priv->cdev.owner = THIS_MODULE;																					// Fa una cosa che non sappiamo a che serva, ma serve.
+	priv->devt = MKDEV(MAJOR(regs_devt), regs_id);													// Assegna la variabile devt, univoca per l'istanza del device
+
+	ret = cdev_add(&priv->cdev, priv->devt, 1); 														// Concretizza ed abilita la cdev
+	if (ret) {																															// 	e se non va a buon fine
+		dev_err(&priv->pdev->dev, "Cannot add chrdev \n");										// 	stampa il messaggio di errore 
+		return ret;																														// 	ed esce
+	}
+	dev_info(&priv->pdev->dev, "Registered device major: %d, minor:%d\n",		// Se invece va a buon fine stampa il messaggio 
+		MAJOR(priv->devt), MINOR(priv->devt));																// con il Major ed il Minor
+
+	pret = device_create(regs_class, NULL, priv->devt, priv,								// Serve ad una serie di cose, tra cui popolare la sys/class 
+		     REGS_NAME_FMT, regs_id);																					// con le informazioi del device
+	if (IS_ERR(pret)) {																											// 	Se non va a buon fine
+		dev_err(&priv->pdev->dev, "Cannot create entry point of device\n");		// 	- stampa il messaggio di errore 
+		cdev_del(&priv->cdev);																								// 	- deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
+		return PTR_ERR(pret);																									// 	- ed esce	
+	}
+	
+	regs_id++;																											// Incremente il valore del Minor (modo becero... i valori eventualmente rilasciati non vengono riutilizzati)
+
+	return 0;
+}	
+
+static int regs_unregister_chardev(struct regs_priv *priv) 
+{
+	device_destroy(regs_class, priv->devt);													// Distrugge il device creato con device_create
+	cdev_del(&priv->cdev);																					// Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
+	return 0;
+}
+	
+
 static int regs_device_probe(struct platform_device *pdev)
 {
 	struct regs_priv *priv; 																				// Puntatore alla lavagnetta
@@ -337,9 +376,9 @@ static int regs_device_probe(struct platform_device *pdev)
 	struct debugfs_regset32 *regset;																// Puntatore alla struttura del debug dei registri
 	char buf[128];
  
-	int ret;
+	int ret;																												// Variabile di appoggio
 		
-	priv = kzalloc(sizeof(struct regs_priv), GFP_KERNEL);						// Alloca la lavagnetta azzerandola (kmalloc alloca, kzalloc alloca ed azzera)
+	priv = devm_kzalloc(&pdev->dev, sizeof(struct regs_priv), GFP_KERNEL);			// Alloca la lavagnetta azzerandola (kmalloc alloca, kzalloc alloca ed azzera)
 	
 	spin_lock_init(&priv->irq_lock);																// Inizializza lo spin_lock (la macro vuole il puntatore)
 	
@@ -357,51 +396,50 @@ static int regs_device_probe(struct platform_device *pdev)
 		return priv->irq;
 	}
 	ret =	devm_request_irq(&pdev->dev, priv->irq, regs_irq_handler, // Abilita l' interrupt e gli associa l' handler 'regs_irq_handler' 
-				IRQF_SHARED, "register_axi (culo)", priv);								// NOTA: e' la versione 'devm', quindi lo scarico viene automaticamwente gestito alla caduta del device &pdev->dev
+				IRQF_SHARED, "register_axi", priv);												// NOTA: e' la versione 'devm', quindi lo scarico viene automaticamwente gestito alla caduta del device &pdev->dev
 	if (ret) {																											// NOTA: l' ultimo parametro e' un puntatore a qualcosa che si desidera il kernel passi alla handler
 		dev_err(&pdev->dev, "Error requesting irq: %i\n",
 		       ret);
 		return ret;
 	}
 	
-	
-	if (regs_debugfsdir) {																					// Genera una sottodirectory (con il nome del puntatore) nella cartella regs per ogni istanza del driver caricata
-		sprintf(buf, "regs.%pa", &res->start);
-		priv->debugfsdir = debugfs_create_dir(buf, regs_debugfsdir);
+	if (regs_debugfsdir) {																					// Se la directory madre esiste
+		sprintf(buf, "regs.%pa", &res->start);												// Carica in but il nome che si vuole dare alla sottodirectory
+		priv->debugfsdir = debugfs_create_dir(buf, regs_debugfsdir);  // Genera una sottodirectory (con il nome del puntatore) nella cartella regs per ogni istanza del driver caricata 
 	}
-
-	if (priv->debugfsdir) {																							// Controlla sel "priv->debugfsdir = debugfs_create_dir(buf, regs_debugfsdir);" ha avuto buon fine
-		regset = devm_kzalloc(&pdev->dev, sizeof(*regset), GFP_KERNEL);   // in caso affermativo, si alloca una struttura di tipo "debugfs_regset32" 
+	if (!IS_ERR(priv->debugfsdir)) {																			// Controlla sel "priv->debugfsdir = debugfs_create_dir(buf, regs_debugfsdir);" ha avuto buon fine (il punto esclamativo all' inizio 'e "non")
+		regset = devm_kzalloc(&pdev->dev, sizeof(*regset), GFP_KERNEL);   	// in caso affermativo, si alloca una struttura di tipo "debugfs_regset32" 
 		if (!regset)
-			return 0;
-		regset->regs = regs_regs;																					// regset viene riempita
+		{
+			debugfs_remove_recursive(priv->debugfsdir);								      	// Distrugge la directory del regset ed anche il file ivi contenuuto
+			return -ENOMEM;
+		}
+		regset->regs = regs_regs;																						// regset viene riempita
 		regset->nregs = ARRAY_SIZE(regs_regs);
 		regset->base = priv->reg_base;
 		debugfs_create_regset32("regdump", 0444, priv->debugfsdir, regset); // crea il file "regdump" in cui c'e' la regset
+	} 
+	
+	ret = regs_register_chardev(priv);																		// Registra il device a caratteri
+		if (ret) {																													// Se non va a buon fine
+		dev_err(&priv->pdev->dev, "Cannot add chrdev \n");									// - stampa il messaggio di errore 
+		return ret;																													// - ed esce
 	}
 	
-	cdev_init(&priv->regs_cdev, &regs_fops);												// Inizializza la regs_cdev
-	priv->regs_cdev.owner = THIS_MODULE;														// Fa questa cosa che non sappiamo a che cazzo serva, ma serve.
-	priv->regs_devt = MKDEV(MAJOR(regs_drv_devt), regs_id);					// Assegna la variabile regs_devt, univoca per l'istanza del device
-	regs_id++;																											// Incremente il valore del Minor (modo becero... i valori eventualmente rilasciati non vengono riutilizzati)
-	ret = cdev_add(&priv->regs_cdev, priv->regs_devt, 1); 					// Concretizza ed abilita la cdev
-	if (ret) {																											// Se non va a buon fine stampa il messaggio di errore ed esce
-		dev_err(&priv->pdev->dev, "Cannot add chrdev \n");
-		return ret;
-	}
-	dev_info(&priv->pdev->dev, "Registered device major: %d, minor:%d\n",		// // Se va a buon fine stampa il messaggio con il Major ed il Minor
-		MAJOR(priv->regs_devt), MINOR(priv->regs_devt));
 	return 0;
 }
 
 static int regs_device_remove(struct platform_device *pdev)				
 {
 	struct regs_priv *priv = platform_get_drvdata(pdev);
+	int ret;
 
 	/* FIXME: resource release ! */
-	debugfs_remove_recursive(priv->debugfsdir);								// Distrugge la directoy del regset ed anche il file ivi contenuuto
-	cdev_del(&priv->regs_cdev);																	  // Deregistra il cdev con le fops e tutte le sue cose (simmetrico a cdev_add fatto nella probe)
-	kfree(priv);																							// disintegra la lavagnetta (simmetrico a kmalloc fatto nella probe)
+	debugfs_remove_recursive(priv->debugfsdir);								    // Distrugge la directory del regset ed anche il file ivi contenuuto
+
+  ret = regs_unregister_chardev(priv);	
+// 	kfree(priv);																							  // disintegra la lavagnetta (simmetrico a kmalloc fatto nella probe)
+																																// NOTA: non serve perch'e si era usata la devm_kzmalloc
 	return 0;
 }
 
@@ -426,9 +464,10 @@ static void __exit regs_module_remove(void)											// Viene chiamata un' unic
 {
 	platform_driver_unregister(&regs_platform_driver);						// deregistra il driver dal kernel
 	debugfs_remove_recursive(regs_debugfsdir);										// cancella la directory madre del driver
+	class_destroy(regs_class);															      // Distrugge la classe
 	
-	if (regs_drv_devt) {																					// se regs_drv_devt non 'e zero (quindi se esiste)
-		unregister_chrdev_region(regs_drv_devt, REGS_MINOR_COUNT);	// rilascia la memoria ed il Major (con i Minor associati) che aveva allocato con la alloc_chrdev_region
+	if (regs_devt) {																					// se regs_devt non 'e zero (quindi se esiste)
+		unregister_chrdev_region(regs_devt, REGS_MINOR_COUNT);	// rilascia la memoria ed il Major (con i Minor associati) che aveva allocato con la alloc_chrdev_region
 		}
 }
 
@@ -436,17 +475,53 @@ static int __init regs_module_init(void)
 {
 	int ret;
 	
-	ret = alloc_chrdev_region(&regs_drv_devt, 0, REGS_MINOR_COUNT, REGS_DEV_NAME);  // Per il Kernel: prepara le strutture; 
-	   																																					// Per l' utente: assegna un Major e alloca uno spazio di minor (tanti quanti indicati da REGS_MINOR_COUNT) andando a "riempire" devt
+	ret = alloc_chrdev_region(&regs_devt, 0, REGS_MINOR_COUNT, REGS_DEV_NAME);  // Per il Kernel: prepara le strutture; 
+	   																																							// Per l' utente: assegna un Major e alloca uno spazio di minor 
+																																									// (tanti quanti indicati da REGS_MINOR_COUNT) andando a "riempire" devt
+	if (ret < 0) {
+		printk(KERN_ALERT "Error allocating chrdev region for driver " REGS_DRIVER_NAME " \n");
+		goto exit;
+	}
 	
+	
+	regs_class = class_create(THIS_MODULE, REGS_CLASS_NAME); 	// Crea la classe per il drive; il Kernel crea anche la directory associata
+	if (IS_ERR(regs_class)) {
+		printk(KERN_ALERT "Error creating class " REGS_CLASS_NAME " \n");
+		ret = PTR_ERR(regs_class);													// Estrae dal puntatore un codice di errore
+		goto unreg_chrreg;
+	}
+	
+			
 	regs_debugfsdir = debugfs_create_dir("regs", NULL);			// Crea la directory "regs" al percorso /sys/kernel/debug
+	if (IS_ERR(regs_debugfsdir)) {
+		printk(KERN_ALERT "Error creating directory for driver " REGS_DRIVER_NAME " \n");
+		ret = PTR_ERR(regs_debugfsdir);												// Estrae dal puntatore un codice di errore
+		goto unreg_class;
+	}
+	
+	
 	ret = platform_driver_register(&regs_platform_driver);  // Ogni volta che nel DTS si trova una IP di tipo "xlnx,registers-axi-1.0" viene eseguita la probe
 	if (ret) {    																					// Fornisce errore in caso non sia riuscita a registrare il driver
 		printk(KERN_ALERT "Error registering driver "
 		       REGS_DRIVER_NAME " \n");
+		goto unreg_debugfs;
 	}
 
+		
 	return 0;
+	
+unreg_debugfs:
+	debugfs_remove_recursive(regs_debugfsdir);						  		// cancella la directory madre del driver
+			
+unreg_class:
+	class_destroy(regs_class);														  		// Distrugge la classe
+
+unreg_chrreg:
+	unregister_chrdev_region(regs_devt, REGS_MINOR_COUNT);	// rilascia la memoria ed il Major (con i Minor associati) che aveva allocato con la alloc_chrdev_region
+exit:
+
+	return ret;	
+	
 }
 
 module_init(regs_module_init);			// Funzione chiamata all' "insmod" 

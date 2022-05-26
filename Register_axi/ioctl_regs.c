@@ -10,7 +10,11 @@
 
 
 
-
+#define REGS_NAME "regs"
+#define REGS_DRIVER_NAME REGS_NAME"-driver"
+#define REGS_CLASS_NAME  REGS_NAME"-class"
+#define REGS_DEV_NAME    REGS_NAME"-dev"
+#define REGS_NAME_FMT    REGS_NAME"%d"
 
 
 

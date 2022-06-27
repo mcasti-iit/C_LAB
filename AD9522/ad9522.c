@@ -39,8 +39,8 @@
 
 # define REG_LOG 1
 
-/* max Eyes that can be handled */
-#define AD9522_MINOR_COUNT 10
+/* max devices that can be handled */
+#define AD9522_MINOR_COUNT 1
 
 /* names */
 #define AD9522_NAME "iit-AD9522"
@@ -53,7 +53,7 @@
 static const char    driver_load_string[] = "AD9522 driver module is loaded!\n\0";
 static const ssize_t driver_load_string_size = sizeof(driver_load_string);
 
-static struct class  *AD9522_class = NULL;
+static struct class  *AD9522_class = NULL;  // Dichiara la struttura class per questo device
 
 
 
@@ -487,8 +487,7 @@ static int AD9522_register_chardev(struct AD9522_priv *priv)
 		return ret;																																	// 	ed esce
 	}			
 	dev_info(&priv->client->dev, "Registered device major: %d, minor:%d\n",				// 	Se invece va a buon fine stampa il messaggio 
-	       MAJOR(priv->devt), MINOR(priv->devt));																	// 	con il Major ed il Minor
-				
+	       MAJOR(priv->devt), MINOR(priv->devt));																	// 	con il Major ed i				
 	pret = device_create(AD9522_class, NULL, priv->devt, priv,										// Serve ad una serie di cose, tra cui popolare la sys/class 
 		     AD9522_NAME_FMT, minor);																								// con le informazioi del device
 	if (IS_ERR(pret)) {																														// 	Se non va a buon fine
@@ -533,7 +532,7 @@ static int AD9522_i2c_probe(struct i2c_client *client)
 	
 	i2c_set_clientdata(client, priv);																							// Associa la priv alla struttura i2c_client		
 
-	ret = regmap_read(priv->regmap, PART_ID_ADDR, &part_id_reg);												//	Verifica la leggibilita' della regmap leggendo un registro
+	ret = regmap_read(priv->regmap, PART_ID_ADDR, &part_id_reg);									//	Verifica la leggibilita' della regmap leggendo un registro
 	if (ret < 0) {																																// 	Se non va a buon fine
 		dev_err(&client->dev, "Unable to read in register map");										// 	- stampa il messaggio di errore 
    	return ret;																																	// 	- ed esce
@@ -559,7 +558,7 @@ static int AD9522_i2c_remove(struct i2c_client *client)
 }
 
 // Opzionale
-//MODULE_DEVICE_TABLE(i2c, AD9522_id);
+//MODULE_DEVICE_TABLE(i2c, AD9522_id);																						// Definisce dei metadati per il file ko
 
 static struct i2c_driver AD9522_driver = {
         .driver = {
@@ -579,15 +578,14 @@ static int AD9522_module_init(void)
 	ret = alloc_chrdev_region(&AD9522_devt, 0, AD9522_MINOR_COUNT, AD9522_DEV_NAME);	// Per il Kernel: prepara le strutture; 
 																																										// Per l' utente: assegna un Major e alloca uno spazio di minor 
 																																										// (tanti quanti indicati da REGS_MINOR_COUNT) andando a "riempire" devt
-	if (ret < 0) {
-		printk(KERN_ALERT "Error allocating chrdev region for driver "
+	if (ret < 0) {																																		// Verifica di buon fine
+		printk(KERN_ALERT "Error allocating chrdev region for driver "									// NOTA: si usa la printk perche' il device non e' ancora stato "tirato su" 
 		 	AD9522_DRIVER_NAME " \n");
 		ret = -ENOMEM;
 		goto exit;
 	}
    
-    printk( KERN_NOTICE "Registered AD9522 character device with major number = %u\n", MAJOR(AD9522_devt) );
-		printk( KERN_NOTICE "Found a register set of  = %lu\n", ARRAY_SIZE(gtfreq_125_tab) );
+  printk( KERN_NOTICE "Registered AD9522 character device with major number = %u\n", MAJOR(AD9522_devt) );
     
 	AD9522_class = class_create(THIS_MODULE, AD9522_CLASS_NAME); 	// Crea la classe per il drive; il Kernel crea anche la directory associata
 	if (IS_ERR(AD9522_class)) {

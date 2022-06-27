@@ -68,7 +68,7 @@
 #define EDEYE_NAME "iit-edeye"
 #define EDEYE_DRIVER_NAME EDEYE_NAME"-driver"
 #define EDEYE_CLASS_NAME EDEYE_NAME"-class"
-#define EDEYE_DEV_NAME EDEYE_NAME"-dev"
+#define EDEYE_DEV_NAME EDEYE_NAME"-dev"info@columbiaoptics.com
 #define EDEYE_NAME_FMT EDEYE_NAME"%d"
 
 // --------

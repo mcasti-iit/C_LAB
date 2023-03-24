@@ -1,0 +1,4 @@
+export ARCH=arm
+export CROSS_COMPILE=arm-none-eabi-
+export KDIR=/home/mcasti/Progetti/linux-kernel-zynq7000
+
